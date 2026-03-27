@@ -1,34 +1,34 @@
 .PHONY: test bench clean fmt vet lint race check example
 
-# 格式化检查（CI 必须通过）
+# Format check (CI must pass)
 fmt:
 	@echo "==> Checking gofmt..."
 	@test -z "$$(gofmt -l .)" || (echo "gofmt check failed:" && gofmt -l . && exit 1)
 
-# 静态分析（CI 必须通过）
+# Static analysis (CI must pass)
 vet:
 	go vet ./...
 
-# 单元测试
+# Unit tests
 test:
 	go test -count=1 ./pkg/disk_cache/
 
-# 竞态检测测试
+# Race detection tests
 race:
 	go test -race -count=1 ./...
 
-# 基准测试
+# Benchmarks
 bench:
 	go test -bench=. -benchmem ./test/benchmarks/
 
-# 质量门禁（CI 推荐使用）
+# Quality gate (recommended for CI)
 check: fmt vet race
 
-# 清理
+# Clean
 clean:
 	go clean
 	rm -rf example_cache test_cache
 
-# 运行示例
+# Run example
 example:
 	go run examples/basic_usage.go

@@ -1,23 +1,85 @@
-# DiskCache - 高性能磁盘缓存库
+# DiskCache
 
-DiskCache 是一个高性能的 Go 语言磁盘缓存库，提供基于 LRU 淘汰策略的磁盘缓存解决方案。
+[![CI](https://github.com/juliehwang/diskcache/actions/workflows/ci.yml/badge.svg)](https://github.com/juliehwang/diskcache/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/juliehwang/diskcache)](https://goreportcard.com/report/github.com/juliehwang/diskcache)
+[![GoDoc](https://pkg.go.dev/badge/github.com/juliehwang/diskcache)](https://pkg.go.dev/github.com/juliehwang/diskcache)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/juliehwang/diskcache)](go.mod)
+[![License](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)](LICENSE)
 
-## 特性
+[中文文档](README_CN.md)
 
-- 🚀 **高性能**: 采用分片锁设计，支持高并发读写
-- 💾 **持久化**: 缓存数据持久化到磁盘，支持重启恢复
-- ⏰ **TTL 支持**: 支持缓存过期时间设置
-- 🔄 **LRU 淘汰**: 基于 LRU 算法自动淘汰旧数据
-- 🛡️ **线程安全**: 完全线程安全，支持并发访问
-- 📦 **轻量级**: 无外部依赖，纯 Go 实现
+## Why DiskCache?
 
-## 安装
+Most Go caching libraries (groupcache, bigcache, freecache) are **in-memory only** — data is lost on restart and total capacity is limited by available RAM.
+
+DiskCache fills a different niche: **persistent, disk-backed caching** with the ergonomics of an in-memory cache.
+
+| | DiskCache | bigcache | freecache | groupcache |
+|---|---|---|---|---|
+| **Storage** | Disk | Memory | Memory | Memory |
+| **Survives restart** | ✅ | ❌ | ❌ | ❌ |
+| **Capacity** | Limited by disk | Limited by RAM | Limited by RAM | Limited by RAM |
+| **Concurrency** | Sharded RWMutex | Sharded Mutex | Sharded Mutex | Mutex |
+| **Eviction** | LRU + TTL | FIFO + TTL | LRU + TTL | LRU |
+| **Use case** | Large files, warm restart | Hot data, low latency | Hot data, zero GC | Distributed cache |
+
+**Choose DiskCache when you need:**
+- Cache data that **survives process restarts** without external dependencies (Redis, Memcached)
+- Caching **large objects** (images, ML models, compiled templates) that don't fit in RAM
+- A **simple, embedded** solution with zero infrastructure overhead
+
+## Features
+
+- **Sharded locks** — 16 shards (FNV-1a hash) reduce write contention
+- **O(1) LRU eviction** — doubly linked list + hash map per shard
+- **TTL expiration** — background cleanup + lazy deletion on access
+- **Async disk I/O** — evicted files deleted via buffered channel, outside shard locks
+- **Restart recovery** — in-memory index rebuilt from disk on startup
+- **Zero dependencies** — only the Go standard library (test dependencies excluded)
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                     DiskCache                       │
+│                                                     │
+│  ┌──────────┐ ┌──────────┐       ┌──────────┐      │
+│  │ Shard 0  │ │ Shard 1  │  ...  │ Shard 15 │      │
+│  │ RWMutex  │ │ RWMutex  │       │ RWMutex  │      │
+│  │ LRU List │ │ LRU List │       │ LRU List │      │
+│  │ Index Map│ │ Index Map│       │ Index Map│      │
+│  └──────────┘ └──────────┘       └──────────┘      │
+│                                                     │
+│  ┌─────────────────┐  ┌──────────────────────────┐  │
+│  │  cleanupLoop()  │  │  evictWorker()           │  │
+│  │  periodic TTL   │  │  async file deletion     │  │
+│  │  scan & expire  │  │  via buffered channel    │  │
+│  └─────────────────┘  └──────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+						 │
+					┌────┴────┐
+					│  Disk   │
+					│ (flat   │
+					│  files) │
+					└─────────┘
+```
+
+Key design decisions:
+- **Disk I/O outside locks** — `Set` writes to disk before acquiring the shard lock; eviction deletes files after releasing it. Lock hold time is pure in-memory work.
+- **Two-phase cleanup** — expired keys collected under read lock, removed under write lock. No blocking of concurrent reads during scan.
+- **Async eviction** — evicted file paths are sent to a buffered channel (cap 512). Falls back to synchronous deletion if the channel is full.
+
+> For a deeper dive, see [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md).
+
+## Installation
 
 ```bash
 go get github.com/juliehwang/diskcache
 ```
 
-## 快速开始
+Requires **Go 1.21+**. No CGO, no external dependencies.
+
+## Quick Start
 
 ```go
 package main
@@ -31,80 +93,109 @@ import (
 )
 
 func main() {
-	// 创建磁盘缓存实例
-	cfg := &diskcache.Config{
+	dc, err := diskcache.New(&diskcache.Config{
 		DiskCacheDir:             "./cache",
-		DiskCacheMaxSize:         100 * 1024 * 1024, // 100MB
-		DiskCacheTTL:             24 * time.Hour,    // 24小时
-		DiskCacheCleanupInterval: time.Hour,         // 清理间隔
-	}
-
-	dc, err := diskcache.New(cfg)
+		DiskCacheMaxSize:         100 * 1024 * 1024, // 100 MB
+		DiskCacheTTL:             24 * time.Hour,
+		DiskCacheCleanupInterval: time.Hour,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer dc.Close()
 
-	// 写入缓存
-	err = dc.Set("user:123", []byte("user data"))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 读取缓存
-	data, err := dc.Get("user:123")
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("Cached data:", string(data))
-
-	// 删除缓存
-	err = dc.Delete("user:123")
-	if err != nil {
-		log.Fatal(err)
-	}
+	_ = dc.Set("greeting", []byte("hello, diskcache"))
+	data, _ := dc.Get("greeting")
+	fmt.Println(string(data)) // "hello, diskcache"
 }
 ```
 
-## API 参考
+## API
 
-### Config 配置结构
+| Method | Description |
+|--------|-------------|
+| `New(cfg) (*DiskCache, error)` | Create a cache instance |
+| `Set(key, data) error` | Write a cache entry |
+| `Get(key) ([]byte, error)` | Read a cache entry (returns `os.ErrNotExist` on miss) |
+| `Delete(key) error` | Delete a cache entry |
+| `Size() int64` | Total cache size in bytes |
+| `Len() int` | Number of cached entries |
+| `Close()` | Stop background goroutines and drain eviction queue |
 
-```go
-type Config struct {
-	DiskCacheDir             string        // 缓存目录路径
-	DiskCacheMaxSize         int64         // 最大缓存大小（字节）
-	DiskCacheTTL             time.Duration // 缓存过期时间
-	DiskCacheCleanupInterval time.Duration // 清理间隔时间
-}
+## Config
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `DiskCacheDir` | `string` | Cache directory path |
+| `DiskCacheMaxSize` | `int64` | Max total size in bytes |
+| `DiskCacheTTL` | `time.Duration` | Entry time-to-live |
+| `DiskCacheCleanupInterval` | `time.Duration` | Background cleanup interval |
+
+## Benchmarks
+
+Tested on Linux (Intel Xeon Platinum 8255C @ 2.50GHz, 16 cores), 1 KB values:
+
+```
+goos: linux
+goarch: amd64
+cpu: Intel(R) Xeon(R) Platinum 8255C CPU @ 2.50GHz
+
+BenchmarkDiskCache_Set-16    59736    20052 ns/op    526 B/op    8 allocs/op
+BenchmarkDiskCache_Get-16   121865     9627 ns/op   1541 B/op    6 allocs/op
 ```
 
-### 主要方法
+| Operation | Throughput | Latency | Allocs |
+|-----------|-----------|---------|--------|
+| **Set** (1 KB) | ~50,000 ops/s | ~20 µs | 8 allocs/op |
+| **Get** (1 KB) | ~104,000 ops/s | ~9.6 µs | 6 allocs/op |
 
-- `New(cfg *Config) (*DiskCache, error)` - 创建缓存实例（推荐）
-- `NewDiskCache(cfg *Config) (*DiskCache, error)` - 创建缓存实例（兼容）
-- `Set(key string, data []byte) error` - 设置缓存
-- `Get(key string) ([]byte, error)` - 获取缓存
-- `Delete(key string) error` - 删除缓存
-- `Close()` - 关闭缓存实例（停止后台清理）
+> **Note:** Latency is dominated by disk I/O. On NVMe SSDs, expect significantly better numbers. In-memory index operations alone take < 200 ns.
 
-## 性能测试
-
-运行基准测试：
+Run benchmarks yourself:
 
 ```bash
-cd test/benchmarks
-go test -bench=.
+cd test/benchmarks && go test -bench=. -benchmem
 ```
 
-## 许可证
+## Use Cases
 
-BSD 2-Clause License - 详见 [LICENSE](LICENSE) 文件
+| Scenario | Example |
+|----------|---------|
+| **Web static assets** | Cache resized images, compiled CSS/JS bundles |
+| **ML model serving** | Cache downloaded model weights locally |
+| **Data pipelines** | Cache intermediate processing results |
+| **API response caching** | Persist upstream API responses across restarts |
+| **File download proxy** | Local disk cache for remote file downloads |
 
-## 贡献
+## Project Structure
 
-欢迎提交 Issue 和 Pull Request！
+```
+diskcache/
+├── diskcache.go                    # Public facade (New / Config)
+├── pkg/disk_cache/
+│   ├── disk_cache.go               # Core implementation
+│   └── disk_cache_test.go          # Unit tests
+├── test/benchmarks/
+│   └── disk_cache_bench_test.go    # Benchmarks
+├── examples/
+│   └── basic_usage.go              # Usage example
+└── docs/design/
+	└── ARCHITECTURE.md             # Design documentation
+```
 
-## 支持
+## Contributing
 
-如有问题，请通过 GitHub Issues 联系我们。
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Run quality checks before committing:
+   ```bash
+   make check   # runs gofmt + go vet + race tests
+   ```
+4. Commit with a clear message (`git commit -m 'feat: add amazing feature'`)
+5. Push and open a Pull Request
+
+## License
+
+BSD 2-Clause License — see [LICENSE](LICENSE).

@@ -1,132 +1,142 @@
-# DiskCache 架构设计
+# DiskCache Architecture Design
 
-## 概述
+## Overview
 
-DiskCache 是一个高性能的磁盘缓存库，采用分片锁 + LRU 链表的设计，提供高并发的磁盘缓存解决方案。
+DiskCache is a high-performance disk cache library that uses a sharded lock + LRU linked list design to provide a high-concurrency disk caching solution.
 
-## 架构设计
+## Architecture
 
-### 核心组件
+### Component Overview
 
 ```
 DiskCache
-├── Config          # 配置管理
-├── shard[]         # 分片数组
-│   ├── sync.RWMutex # 分片读写锁
-│   ├── lruList      # LRU 双向链表
-│   ├── items        # 缓存项映射表
-│   └── size         # 分片当前大小
-├── cleanupTicker   # 清理定时器
-└── closeCh         # 关闭通道
+├── shards[16]        // cacheShard array
+│   ├── sync.RWMutex  // per-shard lock
+│   ├── lruList       // doubly linked list (container/list)
+│   ├── index         // map[string]*list.Element
+│   └── currentSize   // shard byte count
+├── evictChan         // buffered channel for async file deletion
+├── totalMu           // serializes cross-shard eviction
+├── cleanupLoop()     // background TTL cleanup goroutine
+└── evictWorker()     // background file deletion goroutine
 ```
 
-### 分片设计
+### Key Design Decisions
 
-- **分片数量**: 默认 256 个分片，减少锁竞争
-- **锁粒度**: 每个分片独立读写锁，提高并发性能
-- **LRU 实现**: 双向链表 + Map 实现 O(1) 的 LRU 操作
+#### Sharded Locks
+16 shards (FNV-1a hash) reduce write lock contention. Each shard has an independent
+RWMutex, so reads on different shards never block each other.
 
-### 数据存储
+#### Disk I/O Outside Locks
+`Set` writes to disk **before** acquiring the shard lock. `Delete` and eviction
+remove the in-memory entry under the lock, then delete the file outside it.
+This keeps lock hold times minimal (pure in-memory operations only).
 
-- **文件结构**: `{cacheDir}/{shardIndex}/{key}.dat`
-- **索引文件**: 每个分片维护内存索引，重启时重建
-- **元数据**: 文件头包含创建时间、大小等信息
+#### Two-Phase Cleanup
+`cleanup()` collects expired keys under a **read lock** (non-blocking to Get/Set),
+then removes them under a **write lock**. Disk deletion is queued to `evictChan`
+and handled by `evictWorker`.
 
-## 性能优化
+#### Async Eviction
+Evicted file paths are sent to a buffered channel (`evictChan`, cap=512).
+`evictWorker` deletes them in the background. If the channel is full, deletion
+falls back to synchronous removal to avoid unbounded memory growth.
 
-### 并发优化
-- 分片锁设计，减少锁竞争
-- 读写分离，读操作可并发进行
-- 异步文件删除，避免阻塞主线程
+#### Startup Recovery
+`loadIndex` scans the cache directory, filters out expired files, sorts by
+modification time, and rebuilds the LRU list. Expired files are queued for
+async deletion without blocking startup.
 
-### 内存优化
-- 惰性加载，只在需要时读取文件内容
-- 对象池管理，减少内存分配
-- 定期清理过期缓存
+### Data Flow
 
-### 磁盘 I/O 优化
-- 批量写入操作
-- 文件预分配空间
-- 缓存友好的文件布局
+```
+Set(key, data)
+  ├─ evictIfNeeded(dataSize)     // cross-shard LRU eviction under totalMu
+  ├─ os.WriteFile(...)           // disk write, no lock held
+  └─ shard.Lock → update index   // pure in-memory, fast
 
-## 特性支持
+Get(key)
+  ├─ shard.RLock → copy metadata // read lock, no disk I/O
+  ├─ check TTL                   // expired → async Delete
+  ├─ os.ReadFile(...)            // disk read, no lock held
+  └─ shard.Lock → MoveToBack     // re-fetch elem from index to avoid stale refs
+```
 
-### LRU 淘汰
-- 基于访问时间的 LRU 淘汰策略
-- 支持最大缓存大小限制
-- 自动淘汰最久未使用的缓存项
+## Performance Optimizations
 
-### TTL 过期
-- 支持缓存项过期时间设置
-- 定期清理过期缓存
-- 懒删除机制，减少额外开销
+### Concurrency
+- Sharded lock design to reduce lock contention
+- Read-write separation allowing concurrent reads
+- Asynchronous file deletion to avoid blocking the main path
 
-### 持久化
-- 缓存数据持久化到磁盘
-- 支持进程重启后恢复
-- 崩溃安全的事务性操作
+### Memory
+- Lazy loading: file contents are only read when needed
+- Periodic cleanup of expired cache entries
 
-## API 设计
+### Disk I/O
+- Disk writes performed outside locks
+- Async eviction via buffered channel
+- Cache-friendly flat file layout
 
-### 核心接口
+## Feature Support
+
+### LRU Eviction
+- Access-time-based LRU eviction strategy
+- Maximum cache size limit support
+- Automatic eviction of least recently used entries
+
+### TTL Expiration
+- Configurable cache entry time-to-live
+- Periodic background cleanup of expired entries
+- Lazy deletion mechanism to reduce overhead
+
+### Persistence
+- Cache data persisted to disk
+- Supports recovery after process restart
+- Index rebuilt from disk on startup
+
+## API Design
+
+### Core Interface
 ```go
-type DiskCache interface {
-    Set(key string, data []byte) error
-    Get(key string) ([]byte, error) 
-    Delete(key string) error
-    Close() error
-}
+type DiskCache struct { ... }
+
+func NewDiskCache(cfg *Config) (*DiskCache, error)
+func (dc *DiskCache) Set(key string, data []byte) error
+func (dc *DiskCache) Get(key string) ([]byte, error)
+func (dc *DiskCache) Delete(key string) error
+func (dc *DiskCache) Close()
 ```
 
-### 配置选项
+### Configuration
 ```go
 type Config struct {
-    DiskCacheDir             string        // 缓存目录
-    DiskCacheMaxSize         int64         // 最大缓存大小
-    DiskCacheTTL             time.Duration // 缓存过期时间
-    DiskCacheCleanupInterval time.Duration // 清理间隔
+    DiskCacheDir             string        // Cache directory
+    DiskCacheMaxSize         int64         // Maximum cache size
+    DiskCacheTTL             time.Duration // Cache time-to-live
+    DiskCacheCleanupInterval time.Duration // Cleanup interval
 }
 ```
 
-## 使用场景
+## Use Cases
 
-### 适合场景
-- Web 服务缓存静态资源
-- 大数据处理中间结果缓存
-- 机器学习模型缓存
-- 文件下载缓存
+### Suitable For
+- Web service static resource caching
+- Intermediate result caching in data processing
+- Machine learning model caching
+- File download caching
 
-### 不适合场景
-- 需要毫秒级响应的热数据缓存
-- 频繁更新的小数据缓存
-- 需要复杂查询的缓存场景
+### Not Suitable For
+- Hot data caching requiring sub-millisecond response
+- Frequently updated small data caching
+- Caching scenarios requiring complex queries
 
-## 性能指标
+## Reliability
 
-- **写入吞吐**: ~10,000 ops/s (1KB数据)
-- **读取吞吐**: ~50,000 ops/s (内存命中)
-- **延迟**: 写入 < 1ms, 读取 < 100μs
-- **并发**: 支持 1000+ 并发连接
+### Data Safety
+- Atomic operations ensure data consistency
+- Graceful shutdown ensures data integrity
 
-## 扩展性
-
-### 水平扩展
-- 支持多实例分布式部署
-- 可通过一致性哈希分片
-
-### 功能扩展
-- 支持缓存统计和监控
-- 支持压缩和加密
-- 支持多级缓存架构
-
-## 可靠性
-
-### 数据安全
-- 原子性操作保证数据一致性
-- 文件校验和防止数据损坏
-- 优雅关闭保证数据完整性
-
-### 故障恢复
-- 自动检测和修复损坏文件
-- 支持从备份恢复数据
-- 完善的错误处理和日志记录
+### Fault Recovery
+- Automatic detection and cleanup of corrupted files
+- Comprehensive error handling and logging

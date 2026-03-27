@@ -16,7 +16,7 @@ func main() {
 		DiskCacheCleanupInterval: 5 * time.Minute,
 	}
 
-	// 创建缓存实例
+	// Create cache instance
 	dc, err := diskcache.New(cfg)
 	if err != nil {
 		log.Fatal("create disk cache: ", err)
@@ -25,7 +25,7 @@ func main() {
 
 	fmt.Println("DiskCache example started...")
 
-	// 示例1: 基本设置和获取
+	// Example 1: Basic Set and Get
 	fmt.Println("\n1. Basic Set and Get:")
 	if err := dc.Set("greeting", []byte("Hello, World!")); err != nil {
 		log.Fatal("set: ", err)
@@ -37,7 +37,7 @@ func main() {
 	}
 	fmt.Printf("Got: %s\n", string(data))
 
-	// 示例2: 覆盖写入
+	// Example 2: Overwrite
 	fmt.Println("\n2. Overwrite:")
 	if err := dc.Set("greeting", []byte("Hello, DiskCache!")); err != nil {
 		log.Fatal("overwrite: ", err)
@@ -49,7 +49,7 @@ func main() {
 	}
 	fmt.Printf("After overwrite: %s\n", string(data))
 
-	// 示例3: 删除
+	// Example 3: Delete
 	fmt.Println("\n3. Delete:")
 	if err := dc.Delete("greeting"); err != nil {
 		log.Fatal("delete: ", err)
