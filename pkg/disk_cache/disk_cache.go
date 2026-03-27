@@ -354,8 +354,8 @@ func (dc *DiskCache) evictWorker() {
 func (dc *DiskCache) walkCacheDir(now time.Time) (entries []*cacheEntry, expiredPaths []string, err error) {
 	err = filepath.Walk(dc.baseDir, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
-			log.Printf("loadIndex: skip file %s: %v", path, walkErr)
-			return nil
+			log.Printf("loadIndex: walk error %s: %v", path, walkErr)
+			return walkErr
 		}
 		if info.IsDir() {
 			if path == dc.baseDir {

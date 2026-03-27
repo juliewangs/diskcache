@@ -647,7 +647,13 @@ func TestDiskCache_queueExpiredForDeletion_EvictChanFull(t *testing.T) {
 
 // TestDiskCache_loadIndex_WalkError tests loadIndex error on unreadable directory.
 func TestDiskCache_loadIndex_WalkError(t *testing.T) {
-	dir := t.TempDir()
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "cache")
+
 	cfg := &Config{
 		DiskCacheDir:             dir,
 		DiskCacheMaxSize:         10 * 1024 * 1024,
@@ -660,13 +666,12 @@ func TestDiskCache_loadIndex_WalkError(t *testing.T) {
 	require.NoError(t, dc1.Set("key1", []byte("data")))
 	dc1.Close()
 
+	// 将目录权限设为不可读不可执行，filepath.Walk 无法列出目录内容
 	require.NoError(t, os.Chmod(dir, 0000))
-	defer os.Chmod(dir, 0755)
+	defer func() { _ = os.Chmod(dir, 0755) }()
 
-	if os.Getuid() != 0 {
-		_, err = NewDiskCache(cfg)
-		assert.Error(t, err)
-	}
+	_, err = NewDiskCache(cfg)
+	assert.Error(t, err)
 }
 
 // TestDiskCache_Config_EmptyDir tests empty dir rejection.
