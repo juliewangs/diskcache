@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juliehwang/diskcache"
+	"github.com/juliewangs/diskcache"
 )
 
 func BenchmarkDiskCache_Set(b *testing.B) {

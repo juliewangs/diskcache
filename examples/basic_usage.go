@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/juliehwang/diskcache"
+	"github.com/juliewangs/diskcache"
 )
 
 func main() {
