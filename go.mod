@@ -1,4 +1,4 @@
-module github.com/juliehwang/diskcache
+module github.com/juliewangs/diskcache
 
 go 1.21
 

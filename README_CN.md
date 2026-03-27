@@ -1,9 +1,9 @@
 # DiskCache
 
-[![CI](https://github.com/juliehwang/diskcache/actions/workflows/ci.yml/badge.svg)](https://github.com/juliehwang/diskcache/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/juliehwang/diskcache)](https://goreportcard.com/report/github.com/juliehwang/diskcache)
-[![GoDoc](https://pkg.go.dev/badge/github.com/juliehwang/diskcache)](https://pkg.go.dev/github.com/juliehwang/diskcache)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/juliehwang/diskcache)](go.mod)
+[![CI](https://github.com/juliewangs/diskcache/actions/workflows/ci.yml/badge.svg)](https://github.com/juliewangs/diskcache/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/juliewangs/diskcache)](https://goreportcard.com/report/github.com/juliewangs/diskcache)
+[![GoDoc](https://pkg.go.dev/badge/github.com/juliewangs/diskcache)](https://pkg.go.dev/github.com/juliewangs/diskcache)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/juliewangs/diskcache)](go.mod)
 [![License](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)](LICENSE)
 
 [English](README.md)
@@ -76,7 +76,7 @@ DiskCache 填补了一个不同的空白：**持久化、基于磁盘的缓存**
 ## 安装
 
 ```bash
-go get github.com/juliehwang/diskcache
+go get github.com/juliewangs/diskcache
 ```
 
 要求 **Go 1.21+**，无 CGO，无外部依赖。
@@ -91,7 +91,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/juliehwang/diskcache"
+	"github.com/juliewangs/diskcache"
 )
 
 func main() {

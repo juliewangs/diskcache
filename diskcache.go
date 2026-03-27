@@ -16,7 +16,7 @@
 package diskcache
 
 import (
-	impl "github.com/juliehwang/diskcache/pkg/disk_cache"
+	impl "github.com/juliewangs/diskcache/pkg/disk_cache"
 )
 
 // Config is a type alias for pkg/disk_cache.Config.
